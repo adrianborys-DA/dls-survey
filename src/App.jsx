@@ -33,11 +33,14 @@ import {
 } from 'recharts';
 import {
   calculateNPS,
+  calculateNPSStats,
   countBy,
+  countRespondentsBy,
   filterRows,
   getComparablePeriod,
   loadSurveyData,
   npsDistribution,
+  roughSentiment,
   tenureValue,
   uniqueCount,
   uniqueRespondentsByDemographic
@@ -52,10 +55,11 @@ const CURRENT_COLOR = '#0066ff';
 const PRIOR_COLOR = '#ff9f1c';
 
 const EXPERIENCE_COLORS = ['#22c55e', '#0f766e', '#e11d48', '#eab308', '#7c3aed'];
+const RESPONDER_COLORS = ['#2563eb', '#f59e0b', '#16a34a', '#9333ea', '#ef4444'];
 const FOUNDATION_COLORS = ['#ec4899', '#7e22ce', '#f97316', '#1d4ed8', '#38bdf8'];
 
 const tabs = [
-  { name: 'Demographics', icon: Users },
+  { name: 'Overall', icon: Users },
   { name: 'NPS', icon: BarChart3 },
   { name: 'Experience', icon: LayoutDashboard },
   { name: 'Feedback', icon: MessageSquare }
@@ -90,22 +94,23 @@ const demographicFilterConfig = [
   { key: 'alumniPeriod', label: 'Alumni period', column: COLS.alumniPeriod, groups: ['Alumni'] }
 ];
 
-const defaultDemoFilters = Object.fromEntries(demographicFilterConfig.map((f) => [f.key, 'All']));
+const defaultDemoFilters = Object.fromEntries(demographicFilterConfig.map((f) => [f.key, ['All']]));
 
 function formatDelta(delta) {
   if (delta === null || delta === undefined || Number.isNaN(delta)) return '--';
   return `${delta > 0 ? '+' : ''}${delta.toFixed(1)}`;
 }
 
-function MetricCard({ title, current, previous, compareEnabled }) {
+function MetricCard({ title, current, previous, compareEnabled, tone = 'neutral' }) {
   const hasComparison = compareEnabled && previous !== null && previous !== undefined && current !== null && current !== undefined;
   const delta = hasComparison ? current - previous : null;
   const direction = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat';
   const DirectionIcon = direction === 'up' ? TrendingUp : direction === 'down' ? TrendingDown : Minus;
 
   return (
-    <div className="metric-card">
+    <div className={`metric-card metric-card-${tone}`}>
       <div className="metric-value-row">
+        <span className="metric-status-dot" aria-hidden="true" />
         <span className="metric-value">{current ?? '--'}</span>
         {hasComparison && (
           <span className={`delta delta-${direction}`}>
@@ -134,9 +139,81 @@ function splitValues(value) {
     .filter(Boolean);
 }
 
+function normalizeSelection(value) {
+  if (Array.isArray(value)) return value;
+  if (!value || value === 'All') return ['All'];
+  return [value];
+}
+
+function isAllSelection(selection) {
+  const values = normalizeSelection(selection);
+  return values.length === 0 || values.includes('All') || values.includes('All Groups');
+}
+
+function toggleSelection(current, option, allLabel = 'All') {
+  const values = normalizeSelection(current);
+  if (option === allLabel) return [allLabel];
+  const withoutAll = values.filter((value) => value !== allLabel && value !== 'All Groups');
+  const next = withoutAll.includes(option)
+    ? withoutAll.filter((value) => value !== option)
+    : [...withoutAll, option];
+  return next.length ? next : [allLabel];
+}
+
+function MultiSelect({ label, value, options, onChange, allLabel = 'All' }) {
+  const selected = normalizeSelection(value);
+  const selectedOptions = selected.filter((item) => item !== allLabel && item !== 'All Groups');
+  const summary = isAllSelection(selected)
+    ? allLabel
+    : selectedOptions.length <= 2
+      ? selectedOptions.join(', ')
+      : `${selectedOptions.length} selected`;
+
+  return (
+    <label className="multi-select-label">
+      {label}
+      <details className="multi-select">
+        <summary>{summary}</summary>
+        <div className="multi-select-menu">
+          <button type="button" className="multi-select-option" onClick={() => onChange([allLabel])}>
+            <input type="checkbox" readOnly checked={isAllSelection(selected)} />
+            <span>{allLabel}</span>
+          </button>
+          {options.map((option) => (
+            <button key={option} type="button" className="multi-select-option" onClick={() => onChange(toggleSelection(selected, option, allLabel))}>
+              <input type="checkbox" readOnly checked={!isAllSelection(selected) && selected.includes(option)} />
+              <span>{option}</span>
+            </button>
+          ))}
+        </div>
+      </details>
+    </label>
+  );
+}
+
+function rowPeriodMatches(row, selectedPeriods) {
+  return isAllSelection(selectedPeriods) || normalizeSelection(selectedPeriods).includes(row._period);
+}
+
+function rowGroupMatches(row, selectedGroups) {
+  if (isAllSelection(selectedGroups)) return true;
+  const groups = normalizeSelection(selectedGroups);
+  return groups.some((group) => {
+    if (group === 'Staff') return row._group === 'Staff' || row._group === 'Teaching Faculty';
+    return row._group === group;
+  });
+}
+
+function getSelectedGroups(selectedGroups, allGroups) {
+  return isAllSelection(selectedGroups) ? ['All Groups'] : normalizeSelection(selectedGroups).filter((g) => allGroups.includes(g));
+}
+
 function matchesSelectedValue(rawValue, selectedValue) {
-  if (!selectedValue || selectedValue === 'All') return true;
-  return splitValues(rawValue).includes(selectedValue) || String(rawValue || '').trim() === selectedValue;
+  if (isAllSelection(selectedValue)) return true;
+  const selectedValues = normalizeSelection(selectedValue);
+  const rawValues = splitValues(rawValue);
+  const rawTrimmed = String(rawValue || '').trim();
+  return selectedValues.some((value) => rawValues.includes(value) || rawTrimmed === value);
 }
 
 function optionValues(rows, column, split = false) {
@@ -150,13 +227,17 @@ function optionValues(rows, column, split = false) {
   return Array.from(values).filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
-function getActiveDemoFilters(selectedGroup) {
-  if (selectedGroup === 'All Groups') return [];
-  return demographicFilterConfig.filter((f) => f.groups.includes(selectedGroup));
+function getActiveDemoFilters(selectedGroups) {
+  if (isAllSelection(selectedGroups)) return [];
+  const groups = normalizeSelection(selectedGroups);
+  return demographicFilterConfig.filter((f) => groups.some((group) => f.groups.includes(group)));
 }
 
 function rowMatchesDemoFilters(row, demoFilters, activeFilters) {
-  return activeFilters.every((filter) => matchesSelectedValue(row[filter.column], demoFilters[filter.key]));
+  return activeFilters.every((filter) => {
+    if (!filter.groups.includes(row._group)) return true;
+    return matchesSelectedValue(row[filter.column], demoFilters[filter.key]);
+  });
 }
 
 function DistributionStack({ title, subtitle, rows, colors, compareEnabled, previousPeriod }) {
@@ -223,27 +304,27 @@ function NpsSummaryCell({ cell }) {
   if (!cell || cell.current === null || cell.current === undefined) {
     return <span className="summary-cell empty">N/A</span>;
   }
-  const delta = cell.previous === null || cell.previous === undefined ? null : cell.current - cell.previous;
+  const delta = cell.previous === null || cell.previous === undefined ? null : Number((cell.current - cell.previous).toFixed(1));
   const deltaDirection = delta === null ? 'muted' : delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat';
   return (
     <div className="summary-cell">
       <div className="summary-primary"><StatusDot tone={npsTone(cell.current)} /><strong>{formatScore(cell.current, true)}</strong></div>
       <div className={`summary-delta ${deltaDirection}`}>{delta === null ? 'No prior' : `${formatScore(delta, true)} YoY`}</div>
+      <div className="summary-count">n={cell.currentStats?.total ?? 0}</div>
     </div>
   );
 }
 
 function averageScore(rows) {
-  const scored = rows.filter((row) => row._score !== null && row._score !== undefined);
+  const scored = rows.filter((row) => row._positiveScore !== null && row._positiveScore !== undefined);
   if (!scored.length) return null;
-  return Number((scored.reduce((sum, row) => sum + Number(row._score), 0) / scored.length).toFixed(1));
+  return Number((scored.reduce((sum, row) => sum + Number(row._positiveScore), 0) / scored.length).toFixed(3));
 }
 
 function averageTone(value) {
   if (value === null || value === undefined) return 'muted';
-  if (value <= 1.9) return 'green';
-  if (value <= 2.4) return 'lime';
-  if (value <= 2.9) return 'yellow';
+  if (value >= 4.0) return 'green';
+  if (value >= 3.0) return 'yellow';
   return 'red';
 }
 
@@ -252,9 +333,9 @@ function AverageSummaryCell({ cell }) {
     return <span className="summary-cell empty">N/A</span>;
   }
   const delta = cell.previous === null || cell.previous === undefined ? null : Number((cell.current - cell.previous).toFixed(1));
-  // Lower average scores are better for Experience / Foundations.
-  const improved = delta !== null ? delta < 0 : null;
-  const deltaClass = delta === null ? 'muted' : improved ? 'up' : delta > 0 ? 'down' : 'flat';
+  // Higher average scores are better for Experience / Foundations after QA remapping: 5 = strongest positive, 1 = weakest.
+  const improved = delta !== null ? delta > 0 : null;
+  const deltaClass = delta === null ? 'muted' : improved ? 'up' : delta < 0 ? 'down' : 'flat';
   return (
     <div className="summary-cell">
       <div className="summary-primary"><StatusDot tone={averageTone(cell.current)} /><strong>{formatScore(cell.current)}</strong></div>
@@ -276,21 +357,46 @@ function CurrentNpsLabel({ x, y, width, height, value, index, data }) {
   );
 }
 
+function NpsTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="custom-tooltip">
+      <strong>{label}</strong>
+      {payload.map((item) => {
+        const stats = item.payload?.[`${item.dataKey}Stats`];
+        if (!stats) return null;
+        return (
+          <div className="tooltip-period" key={item.dataKey}>
+            <div className="tooltip-period-title" style={{ color: item.color }}>{item.name}</div>
+            <div>NPS: <strong>{formatScore(stats.nps, true)}</strong></div>
+            <div>Respondents: <strong>{stats.total}</strong></div>
+            <div>Promoters: <strong>{stats.promoters}</strong> ({stats.promoterPct}%)</div>
+            <div>Passives: <strong>{stats.passives}</strong> ({stats.passivePct}%)</div>
+            <div>Detractors: <strong>{stats.detractors}</strong> ({stats.detractorPct}%)</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [activeTab, setActiveTab] = useState('NPS');
-  const [selectedPeriod, setSelectedPeriod] = useState('');
-  const [selectedGroup, setSelectedGroup] = useState('All Groups');
+  const [selectedPeriods, setSelectedPeriods] = useState([]);
+  const [selectedGroups, setSelectedGroups] = useState(['All Groups']);
   const [compareEnabled, setCompareEnabled] = useState(true);
   const [demoFilters, setDemoFilters] = useState(defaultDemoFilters);
   const [npsDetailGroup, setNpsDetailGroup] = useState('Overall');
+  const [npsMixIntent, setNpsMixIntent] = useState('All NPS questions');
+  const [sentimentFilter, setSentimentFilter] = useState('All');
 
   useEffect(() => {
     loadSurveyData()
       .then((loaded) => {
         setData(loaded);
-        setSelectedPeriod(loaded.periods.at(-1) || '');
+        setSelectedPeriods([loaded.periods.at(-1) || ''].filter(Boolean));
       })
       .catch((error) => {
         console.error(error);
@@ -300,62 +406,81 @@ function App() {
 
   useEffect(() => {
     setDemoFilters(defaultDemoFilters);
-    if (selectedGroup !== 'All Groups') setNpsDetailGroup(selectedGroup);
-  }, [selectedGroup]);
+    const selected = normalizeSelection(selectedGroups).filter((g) => g !== 'All Groups');
+    if (selected.length === 1) setNpsDetailGroup(selected[0]);
+    else setNpsDetailGroup('Overall');
+  }, [selectedGroups]);
 
   const filterOptions = useMemo(() => {
     if (!data) return {};
-    const baseRows = data.responses.filter((row) => !selectedPeriod || row._period === selectedPeriod);
+    const baseRows = data.responses.filter((row) => rowPeriodMatches(row, selectedPeriods) && rowGroupMatches(row, selectedGroups));
     return Object.fromEntries(
       demographicFilterConfig.map((filter) => {
         const rows = baseRows.filter((row) => filter.groups.includes(row._group));
         return [filter.key, optionValues(rows, filter.column, filter.split)];
       })
     );
-  }, [data, selectedPeriod]);
+  }, [data, selectedPeriods, selectedGroups]);
 
   const derived = useMemo(() => {
-    if (!data || !selectedPeriod) return null;
+    if (!data || !selectedPeriods.length) return null;
 
-    const previousPeriod = getComparablePeriod(data.periods, selectedPeriod);
-    const activeDemoFilters = getActiveDemoFilters(selectedGroup);
+    const primaryPeriod = normalizeSelection(selectedPeriods).filter((p) => p !== 'All').at(-1) || data.periods.at(-1) || '';
+    const selectedPeriodLabel = isAllSelection(selectedPeriods) || normalizeSelection(selectedPeriods).length > 1 ? 'Selected periods' : primaryPeriod;
+    const canCompare = normalizeSelection(selectedPeriods).filter((p) => p !== 'All').length === 1;
+    const previousPeriod = canCompare ? getComparablePeriod(data.periods, primaryPeriod) : null;
+    const activeDemoFilters = getActiveDemoFilters(selectedGroups);
+    const selectedGroupList = getSelectedGroups(selectedGroups, data.groups);
 
-    const filterResponseSet = (period) => filterRows(data.responses, { period, group: selectedGroup })
+    const filterResponseSet = (periodSelection) => data.responses
+      .filter((row) => periodSelection ? row._period === periodSelection : rowPeriodMatches(row, selectedPeriods))
+      .filter((row) => rowGroupMatches(row, selectedGroups))
       .filter((row) => rowMatchesDemoFilters(row, demoFilters, activeDemoFilters));
 
-    const currentResponses = filterResponseSet(selectedPeriod);
+    const currentResponses = filterResponseSet(null);
     const previousResponses = previousPeriod ? filterResponseSet(previousPeriod) : [];
     const currentRespIds = new Set(currentResponses.map((row) => row._respId).filter(Boolean));
     const previousRespIds = new Set(previousResponses.map((row) => row._respId).filter(Boolean));
 
-    const currentNps = filterRows(data.nps, { period: selectedPeriod, group: selectedGroup })
+    const currentNps = data.nps
+      .filter((row) => rowPeriodMatches(row, selectedPeriods) && rowGroupMatches(row, selectedGroups))
       .filter((row) => activeDemoFilters.length === 0 || currentRespIds.has(row._respId));
     const previousNps = previousPeriod
-      ? filterRows(data.nps, { period: previousPeriod, group: selectedGroup })
+      ? data.nps
+        .filter((row) => row._period === previousPeriod && rowGroupMatches(row, selectedGroups))
         .filter((row) => activeDemoFilters.length === 0 || previousRespIds.has(row._respId))
       : [];
 
     const intents = Array.from(new Set(data.nps.map((d) => d._intent).filter(Boolean)));
-    const groupsForSummary = ['Alumni', 'Parent', 'Staff', 'Student'].filter((group) => data.groups.includes(group));
+    const allSummaryGroups = ['Alumni', 'Parent', 'Staff', 'Teaching Faculty', 'Student'].filter((group) => data.groups.includes(group) || group === 'Staff');
+    const groupsForSummary = isAllSelection(selectedGroups) ? allSummaryGroups : selectedGroupList;
+    const summaryGroupsWithOverall = groupsForSummary.includes('Overall') ? groupsForSummary : [...groupsForSummary, 'Overall'];
 
-    const npsFor = (period, group, intent, respIds = null) => {
-      const rows = data.nps.filter((row) => {
-        if (row._period !== period) return false;
-        if (group !== 'Overall' && row._group !== group) return false;
-        if (intent && row._intent !== intent) return false;
-        if (respIds && !respIds.has(row._respId)) return false;
-        return true;
-      });
-      return calculateNPS(rows);
-    };
+    const npsRowsFor = (period, group, intent, respIds = null) => data.nps.filter((row) => {
+      if (row._period !== period) return false;
+      if (group !== 'Overall') {
+        if (group === 'Staff') {
+          if (row._group !== 'Staff' && row._group !== 'Teaching Faculty') return false;
+        } else if (row._group !== group) return false;
+      }
+      if (intent && intent !== 'All NPS questions' && row._intent !== intent) return false;
+      if (respIds && !respIds.has(row._respId)) return false;
+      return true;
+    });
 
-    const detailGroup = selectedGroup !== 'All Groups' ? selectedGroup : npsDetailGroup;
+    const npsStatsFor = (period, group, intent, respIds = null) => calculateNPSStats(npsRowsFor(period, group, intent, respIds));
+
+    const npsFor = (period, group, intent, respIds = null) => npsStatsFor(period, group, intent, respIds).nps;
+
+    const detailGroup = selectedGroupList.length === 1 && selectedGroupList[0] !== 'All Groups' ? selectedGroupList[0] : npsDetailGroup;
     const detailCurrentRows = detailGroup === 'Overall'
       ? currentNps
       : currentNps.filter((row) => row._group === detailGroup);
     const detailPreviousRows = detailGroup === 'Overall'
       ? previousNps
       : previousNps.filter((row) => row._group === detailGroup);
+
+    const mixRows = detailCurrentRows.filter((row) => npsMixIntent === 'All NPS questions' || row._intent === npsMixIntent);
 
     const topMetrics = intents.map((intent) => ({
       intent,
@@ -364,50 +489,60 @@ function App() {
     }));
 
     const overallNpsByIntent = intents.map((intent) => {
-      const current = calculateNPS(currentNps.filter((d) => d._intent === intent));
-      const previous = calculateNPS(previousNps.filter((d) => d._intent === intent));
+      const currentStats = calculateNPSStats(currentNps.filter((d) => d._intent === intent));
+      const previousStats = calculateNPSStats(previousNps.filter((d) => d._intent === intent));
+      const current = currentStats.nps;
+      const previous = previousStats.nps;
       return {
         intent,
-        [selectedPeriod]: current ?? 0,
+        [selectedPeriodLabel]: current ?? 0,
+        [`${selectedPeriodLabel}Stats`]: currentStats,
         [previousPeriod || 'Comparison']: previous ?? 0,
+        [`${previousPeriod || 'Comparison'}Stats`]: previousStats,
         delta: current !== null && current !== undefined && previous !== null && previous !== undefined ? Number((current - previous).toFixed(1)) : null
       };
     });
 
     const detailNpsByIntent = intents.map((intent) => {
-      const current = calculateNPS(detailCurrentRows.filter((d) => d._intent === intent));
-      const previous = calculateNPS(detailPreviousRows.filter((d) => d._intent === intent));
+      const currentStats = calculateNPSStats(detailCurrentRows.filter((d) => d._intent === intent));
+      const previousStats = calculateNPSStats(detailPreviousRows.filter((d) => d._intent === intent));
+      const current = currentStats.nps;
+      const previous = previousStats.nps;
       return {
         intent,
-        [selectedPeriod]: current ?? 0,
+        [selectedPeriodLabel]: current ?? 0,
+        [`${selectedPeriodLabel}Stats`]: currentStats,
         [previousPeriod || 'Comparison']: previous ?? 0,
+        [`${previousPeriod || 'Comparison'}Stats`]: previousStats,
         delta: current !== null && current !== undefined && previous !== null && previous !== undefined ? Number((current - previous).toFixed(1)) : null
       };
     });
 
     const npsRadar = overallNpsByIntent.map((metric) => ({
       intent: metric.intent,
-      [selectedPeriod]: metric[selectedPeriod] ?? 0,
+      [selectedPeriodLabel]: metric[selectedPeriodLabel] ?? 0,
       [previousPeriod || 'Comparison']: metric[previousPeriod || 'Comparison'] ?? 0
     }));
 
     const respFilterFor = (period, group) => {
       if (!activeDemoFilters.length) return null;
-      if (selectedGroup === 'All Groups') return null;
-      if (group !== 'Overall' && group !== selectedGroup) return new Set();
-      return period === selectedPeriod ? currentRespIds : previousRespIds;
+      if (isAllSelection(selectedGroups)) return null;
+      if (group !== 'Overall' && !selectedGroupList.includes(group)) return new Set();
+      return period === primaryPeriod ? currentRespIds : previousRespIds;
     };
 
     const buildNpsCell = (group, intent) => {
-      const current = npsFor(selectedPeriod, group, intent, respFilterFor(selectedPeriod, group));
-      const previous = previousPeriod ? npsFor(previousPeriod, group, intent, respFilterFor(previousPeriod, group)) : null;
-      return { current, previous };
+      const sourceRows = group === 'Overall'
+        ? currentNps
+        : currentNps.filter((row) => group === 'Staff' ? row._group === 'Staff' || row._group === 'Teaching Faculty' : row._group === group);
+      const currentStats = calculateNPSStats(sourceRows.filter((row) => row._intent === intent));
+      const previousStats = previousPeriod ? npsStatsFor(previousPeriod, group, intent, respFilterFor(previousPeriod, group)) : null;
+      return { current: currentStats.nps, previous: previousStats?.nps ?? null, currentStats, previousStats };
     };
 
     const npsSummaryRows = intents.map((intent) => {
       const row = { intent };
-      groupsForSummary.forEach((group) => { row[group] = buildNpsCell(group, intent); });
-      row.Overall = buildNpsCell('Overall', intent);
+      summaryGroupsWithOverall.forEach((group) => { row[group] = buildNpsCell(group, intent); });
       return row;
     });
 
@@ -416,16 +551,49 @@ function App() {
     const gradeCurrent = uniqueRespondentsByDemographic(studentRows, (d) => d[COLS.studentGrade]);
     const gradePrevious = uniqueRespondentsByDemographic(previousStudentRows, (d) => d[COLS.studentGrade]);
     const gradeMap = new Map();
-    gradeCurrent.forEach((d) => gradeMap.set(d.name, { name: d.name, [selectedPeriod]: d.count, [previousPeriod || 'Comparison']: 0 }));
+    gradeCurrent.forEach((d) => gradeMap.set(d.name, { name: d.name, [selectedPeriodLabel]: d.count, [previousPeriod || 'Comparison']: 0 }));
     gradePrevious.forEach((d) => {
-      const row = gradeMap.get(d.name) || { name: d.name, [selectedPeriod]: 0, [previousPeriod || 'Comparison']: 0 };
+      const row = gradeMap.get(d.name) || { name: d.name, [selectedPeriodLabel]: 0, [previousPeriod || 'Comparison']: 0 };
       row[previousPeriod || 'Comparison'] = d.count;
       gradeMap.set(d.name, row);
     });
 
     const tenureCounts = uniqueRespondentsByDemographic(currentResponses, tenureValue).sort((a, b) => b.count - a.count);
-    const involvementCounts = countBy(currentResponses.filter((d) => d._group === 'Parent'), (d) => d[COLS.parentInvolvement], 'count');
-    const extracurricularCounts = countBy(currentResponses.filter((d) => d._group === 'Student'), (d) => d[COLS.studentExtra], 'count');
+    const respondentGroups = ['Student', 'Parent', 'Staff', 'Teaching Faculty', 'Alumni'];
+    const respondentMix = respondentGroups.map((group) => ({
+      name: group === 'Parent' ? 'Parents' : group === 'Student' ? 'Students' : group,
+      count: uniqueCount(currentResponses.filter((d) => d._group === group))
+    })).filter((d) => d.count > 0);
+    const respondentPeriodComparison = [previousPeriod, primaryPeriod].filter(Boolean).map((period) => {
+      const rows = filterResponseSet(period);
+      return {
+        period,
+        Students: uniqueCount(rows.filter((d) => d._group === 'Student')),
+        Parents: uniqueCount(rows.filter((d) => d._group === 'Parent')),
+        Staff: uniqueCount(rows.filter((d) => d._group === 'Staff' || d._group === 'Teaching Faculty')),
+        Alumni: uniqueCount(rows.filter((d) => d._group === 'Alumni'))
+      };
+    });
+    const buildComparisonCounts = (currentRows, previousRows, getter) => {
+      const current = countRespondentsBy(currentRows, getter);
+      const previous = countRespondentsBy(previousRows, getter);
+      const keys = Array.from(new Set([...current.map((d) => d.name), ...previous.map((d) => d.name)])).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      return keys.map((name) => ({
+        name,
+        [selectedPeriodLabel]: current.find((d) => d.name === name)?.count || 0,
+        [previousPeriod || 'Comparison']: previous.find((d) => d.name === name)?.count || 0
+      }));
+    };
+    const involvementCounts = buildComparisonCounts(
+      currentResponses.filter((d) => d._group === 'Parent'),
+      previousResponses.filter((d) => d._group === 'Parent'),
+      (d) => d[COLS.parentInvolvement]
+    );
+    const extracurricularCounts = buildComparisonCounts(
+      currentResponses.filter((d) => d._group === 'Student'),
+      previousResponses.filter((d) => d._group === 'Student'),
+      (d) => d[COLS.studentExtra]
+    );
 
     const buildDistributions = (category) => {
       const currentRows = currentResponses.filter((d) => d._category === category && d._score !== null);
@@ -434,7 +602,7 @@ function App() {
       const choices = answerSets[category];
       return intentsForCategory.map((intent) => {
         const periodRows = [
-          { period: selectedPeriod, rows: currentRows.filter((d) => d._intent === intent) }
+          { period: selectedPeriodLabel, rows: currentRows.filter((d) => d._intent === intent) }
         ];
         if (compareEnabled && previousPeriod) {
           periodRows.unshift({ period: previousPeriod, rows: prevRows.filter((d) => d._intent === intent) });
@@ -477,12 +645,19 @@ function App() {
       });
     };
 
-    const feedbackRows = currentResponses
+    const feedbackRowsAll = currentResponses
       .filter((d) => d._category === 'Feedback' && String(d[COLS.value] || '').trim())
-      .slice(0, 500);
+      .map((row) => ({ ...row, _sentiment: roughSentiment(row[COLS.value]) }));
+    const feedbackRows = feedbackRowsAll.filter((row) => sentimentFilter === 'All' || row._sentiment.label === sentimentFilter).slice(0, 500);
+    const sentimentCounts = ['Positive', 'Neutral', 'Negative'].map((label) => ({
+      name: label,
+      count: feedbackRowsAll.filter((row) => row._sentiment.label === label).length
+    }));
 
     return {
       previousPeriod,
+      selectedPeriodLabel,
+      primaryPeriod,
       currentNps,
       previousNps,
       currentResponses,
@@ -491,13 +666,15 @@ function App() {
       totalPrevious: uniqueCount(previousNps),
       overallNps: calculateNPS(currentNps),
       previousOverallNps: calculateNPS(previousNps),
-      npsDistribution: npsDistribution(currentNps),
+      npsDistribution: npsDistribution(mixRows),
       topMetrics,
       npsRadar,
       overallNpsByIntent,
       detailNpsByIntent,
       npsSummaryRows,
-      groupsForSummary,
+      groupsForSummary: summaryGroupsWithOverall,
+      respondentMix,
+      respondentPeriodComparison,
       detailGroup,
       demoGrades: Array.from(gradeMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })),
       demoTenure: tenureCounts,
@@ -507,9 +684,10 @@ function App() {
       foundationSummaryRows: buildAverageSummary('Foundations'),
       experienceDistributions: buildDistributions('Experience'),
       foundationDistributions: buildDistributions('Foundations'),
-      feedbackRows
+      feedbackRows,
+      sentimentCounts
     };
-  }, [data, selectedPeriod, selectedGroup, demoFilters, npsDetailGroup, compareEnabled]);
+  }, [data, selectedPeriods, selectedGroups, demoFilters, npsDetailGroup, compareEnabled, sentimentFilter, npsMixIntent]);
 
   function downloadFilteredCsv() {
     if (!derived) return;
@@ -521,7 +699,7 @@ function App() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `dls-${activeTab.toLowerCase()}-${selectedPeriod}-${selectedGroup}.csv`;
+    link.download = `dls-${activeTab.toLowerCase()}-${selectedPeriods.join('-') || 'all-periods'}-${selectedGroups.join('-') || 'all-groups'}.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   }
@@ -540,7 +718,7 @@ function App() {
   }
 
   const comparisonKey = derived.previousPeriod || 'Comparison';
-  const activeDemoFilters = getActiveDemoFilters(selectedGroup);
+  const activeDemoFilters = getActiveDemoFilters(selectedGroups);
 
   return (
     <div className="app-shell">
@@ -570,34 +748,33 @@ function App() {
       <div className="content-shell">
         <aside className="sidebar">
           <div className="filter-title"><Filter size={18} /> Filters</div>
-          <label>
-            Survey period
-            <select value={selectedPeriod} onChange={(event) => setSelectedPeriod(event.target.value)}>
-              {data.periods.map((period) => <option key={period}>{period}</option>)}
-            </select>
-          </label>
-          <label>
-            Target group
-            <select value={selectedGroup} onChange={(event) => setSelectedGroup(event.target.value)}>
-              <option>All Groups</option>
-              {data.groups.map((group) => <option key={group}>{group}</option>)}
-            </select>
-          </label>
+          <MultiSelect
+            label="Survey period"
+            value={selectedPeriods}
+            options={data.periods}
+            allLabel="All"
+            onChange={setSelectedPeriods}
+          />
+          <MultiSelect
+            label="Target group"
+            value={selectedGroups}
+            options={data.groups}
+            allLabel="All Groups"
+            onChange={setSelectedGroups}
+          />
 
           {activeDemoFilters.length > 0 && (
             <div className="persona-filters">
               <div className="filter-section-label">Persona filters</div>
               {activeDemoFilters.map((filter) => (
-                <label key={filter.key}>
-                  {filter.label}
-                  <select
-                    value={demoFilters[filter.key] || 'All'}
-                    onChange={(event) => setDemoFilters((prev) => ({ ...prev, [filter.key]: event.target.value }))}
-                  >
-                    <option value="All">All</option>
-                    {(filterOptions[filter.key] || []).map((value) => <option key={value} value={value}>{value}</option>)}
-                  </select>
-                </label>
+                <MultiSelect
+                  key={filter.key}
+                  label={filter.label}
+                  value={demoFilters[filter.key] || ['All']}
+                  options={filterOptions[filter.key] || []}
+                  allLabel="All"
+                  onChange={(value) => setDemoFilters((prev) => ({ ...prev, [filter.key]: value }))}
+                />
               ))}
             </div>
           )}
@@ -615,10 +792,10 @@ function App() {
 
         <main className="main-content">
           <section className="metric-strip">
-            <MetricCard title="Respondents" current={derived.totalCurrent} previous={derived.totalPrevious} compareEnabled={compareEnabled} />
-            <MetricCard title="Overall NPS" current={derived.overallNps} previous={derived.previousOverallNps} compareEnabled={compareEnabled} />
+            <MetricCard title="Respondents" current={derived.totalCurrent} previous={derived.totalPrevious} compareEnabled={compareEnabled} tone="neutral" />
+            <MetricCard title="Overall NPS" current={derived.overallNps} previous={derived.previousOverallNps} compareEnabled={compareEnabled} tone={npsTone(derived.overallNps)} />
             {derived.topMetrics.map((metric) => (
-              <MetricCard key={metric.intent} title={metric.intent} current={metric.current} previous={metric.previous} compareEnabled={compareEnabled} />
+              <MetricCard key={metric.intent} title={metric.intent} current={metric.current} previous={metric.previous} compareEnabled={compareEnabled} tone={npsTone(metric.current)} />
             ))}
           </section>
 
@@ -633,7 +810,6 @@ function App() {
                       <tr>
                         <th>NPS question</th>
                         {derived.groupsForSummary.map((group) => <th key={group}>{group === 'Parent' ? 'Parents' : group === 'Student' ? 'Students' : group}</th>)}
-                        <th>Overall</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -641,7 +817,6 @@ function App() {
                         <tr key={row.intent}>
                           <td>{row.intent}</td>
                           {derived.groupsForSummary.map((group) => <td key={group}><NpsSummaryCell cell={row[group]} /></td>)}
-                          <td><NpsSummaryCell cell={row.Overall} /></td>
                         </tr>
                       ))}
                     </tbody>
@@ -649,26 +824,6 @@ function App() {
                 </div>
               </section>
 
-              <section className="card full-width">
-                <h2>Overall NPS by question</h2>
-                <p className="card-subtitle">Overall score chart with current/prior period bars. Labels show current score and YoY variance in brackets.</p>
-                <div className="chart-height nps-overall-chart">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart layout="vertical" data={derived.overallNpsByIntent} margin={{ top: 10, right: 95, bottom: 10, left: 30 }}>
-                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                      <ReferenceLine x={0} stroke="#334155" />
-                      <XAxis type="number" domain={[-100, 100]} />
-                      <YAxis type="category" dataKey="intent" width={235} tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      {compareEnabled && derived.previousPeriod && <Bar dataKey={comparisonKey} name={derived.previousPeriod} fill={PRIOR_COLOR} barSize={16} />}
-                      <Bar dataKey={selectedPeriod} name={selectedPeriod} fill={CURRENT_COLOR} barSize={18}>
-                        <LabelList content={(props) => <CurrentNpsLabel {...props} data={derived.overallNpsByIntent} />} />
-                      </Bar>
-                      <Legend />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </section>
 
               <section className="card full-width">
                 <div className="chart-title-row">
@@ -676,7 +831,7 @@ function App() {
                     <h2>NPS detail</h2>
                     <p className="card-subtitle">Select one group for a larger, easier-to-read YoY comparison.</p>
                   </div>
-                  <select className="inline-select" value={derived.detailGroup} onChange={(event) => setNpsDetailGroup(event.target.value)} disabled={selectedGroup !== 'All Groups'}>
+                  <select className="inline-select" value={derived.detailGroup} onChange={(event) => setNpsDetailGroup(event.target.value)} disabled={!isAllSelection(selectedGroups)}>
                     <option value="Overall">Overall</option>
                     {data.groups.map((group) => <option key={group} value={group}>{group}</option>)}
                   </select>
@@ -688,9 +843,9 @@ function App() {
                       <ReferenceLine x={0} stroke="#334155" />
                       <XAxis type="number" domain={[-100, 100]} />
                       <YAxis type="category" dataKey="intent" width={245} tick={{ fontSize: 12 }} />
-                      <Tooltip />
+                      <Tooltip content={<NpsTooltip />} />
                       {compareEnabled && derived.previousPeriod && <Bar dataKey={comparisonKey} name={derived.previousPeriod} fill={PRIOR_COLOR} barSize={18} />}
-                      <Bar dataKey={selectedPeriod} name={selectedPeriod} fill={CURRENT_COLOR} barSize={20}>
+                      <Bar dataKey={derived.selectedPeriodLabel} name={derived.selectedPeriodLabel} fill={CURRENT_COLOR} barSize={20}>
                         <LabelList content={(props) => <CurrentNpsLabel {...props} data={derived.detailNpsByIntent} />} />
                       </Bar>
                       <Legend />
@@ -700,18 +855,65 @@ function App() {
               </section>
 
               <section className="card full-width">
-                <h2>NPS response mix</h2>
+                <div className="chart-title-row">
+                  <div>
+                    <h2>NPS response mix</h2>
+                    <p className="card-subtitle">Counts and percentages for the selected NPS detail group. Use the question filter for QA.</p>
+                  </div>
+                  <select className="inline-select" value={npsMixIntent} onChange={(event) => setNpsMixIntent(event.target.value)}>
+                    <option>All NPS questions</option>
+                    {data.intents.map((intent) => <option key={intent}>{intent}</option>)}
+                  </select>
+                </div>
                 <div className="mix-grid">
-                  <div><strong>{derived.npsDistribution.promoterPct}%</strong><span>Promoters</span></div>
-                  <div><strong>{derived.npsDistribution.passivePct}%</strong><span>Passives</span></div>
-                  <div><strong>{derived.npsDistribution.detractorPct}%</strong><span>Detractors</span></div>
+                  <div><strong>{derived.npsDistribution.promoters}</strong><span>Promoters · {derived.npsDistribution.promoterPct}%</span></div>
+                  <div><strong>{derived.npsDistribution.passives}</strong><span>Passives · {derived.npsDistribution.passivePct}%</span></div>
+                  <div><strong>{derived.npsDistribution.detractors}</strong><span>Detractors · {derived.npsDistribution.detractorPct}%</span></div>
                 </div>
               </section>
             </div>
           )}
 
-          {activeTab === 'Demographics' && (
+          {activeTab === 'Overall' && (
             <div className="grid two-col">
+              <section className="card">
+                <h2>Responder mix</h2>
+                <p className="card-subtitle">Current period unique respondents by stakeholder.</p>
+                <div className="chart-height">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={derived.respondentMix} dataKey="count" nameKey="name" innerRadius={70} outerRadius={112} paddingAngle={2}>
+                        {derived.respondentMix.map((_, index) => (
+                          <Cell key={index} fill={RESPONDER_COLORS[index % RESPONDER_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                      <Legend layout="vertical" align="right" verticalAlign="middle" />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </section>
+
+              <section className="card">
+                <h2>Responder comparison by period</h2>
+                <p className="card-subtitle">Stacked unique respondent counts for Fall vs Spring.</p>
+                <div className="chart-height">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={derived.respondentPeriodComparison}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="period" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="Students" stackId="period" fill={RESPONDER_COLORS[0]} />
+                      <Bar dataKey="Parents" stackId="period" fill={RESPONDER_COLORS[1]} />
+                      <Bar dataKey="Staff" stackId="period" fill={RESPONDER_COLORS[2]} />
+                      <Bar dataKey="Alumni" stackId="period" fill={RESPONDER_COLORS[3]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </section>
+
               <section className="card">
                 <h2>Student grade distribution</h2>
                 <p className="card-subtitle">Unique student respondents by grade.</p>
@@ -723,7 +925,7 @@ function App() {
                       <YAxis dataKey="name" type="category" width={80} />
                       <Tooltip />
                       {compareEnabled && derived.previousPeriod && <Bar dataKey={comparisonKey} name={derived.previousPeriod} fill={PRIOR_COLOR} barSize={12} />}
-                      <Bar dataKey={selectedPeriod} name={selectedPeriod} fill={CURRENT_COLOR} barSize={14} />
+                      <Bar dataKey={derived.selectedPeriodLabel} name={derived.selectedPeriodLabel} fill={CURRENT_COLOR} barSize={14} />
                       <Legend />
                     </BarChart>
                   </ResponsiveContainer>
@@ -757,7 +959,9 @@ function App() {
                       <XAxis dataKey="name" />
                       <YAxis />
                       <Tooltip />
-                      <Bar dataKey="count" fill={CURRENT_COLOR} />
+                      {compareEnabled && derived.previousPeriod && <Bar dataKey={comparisonKey} name={derived.previousPeriod} fill={PRIOR_COLOR} />}
+                      <Bar dataKey={derived.selectedPeriodLabel} name={derived.selectedPeriodLabel} fill={CURRENT_COLOR} />
+                      <Legend />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -772,7 +976,9 @@ function App() {
                       <XAxis type="number" />
                       <YAxis type="category" dataKey="name" width={220} tick={{ fontSize: 11 }} />
                       <Tooltip />
-                      <Bar dataKey="count" fill={PRIOR_COLOR} />
+                      {compareEnabled && derived.previousPeriod && <Bar dataKey={comparisonKey} name={derived.previousPeriod} fill={PRIOR_COLOR} />}
+                      <Bar dataKey={derived.selectedPeriodLabel} name={derived.selectedPeriodLabel} fill={CURRENT_COLOR} />
+                      <Legend />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -784,7 +990,7 @@ function App() {
             <div className="experience-stack">
               <section className="card full-width">
                 <h2>Experience and foundations</h2>
-                <p className="card-subtitle">Summary tables show the average score and YoY variance. Lower scores are better because 1 is the most positive answer and 5 is the least positive answer.</p>
+                <p className="card-subtitle">Summary tables show the QA average score and YoY variance. The scale is remapped so 5 is strongest positive and 1 is weakest.</p>
               </section>
 
               <section className="section-label-card">Tell us about your experience</section>
@@ -841,21 +1047,40 @@ function App() {
 
           {activeTab === 'Feedback' && (
             <section className="card full-width">
-              <h2>Open-ended feedback</h2>
-              <p className="card-subtitle">The file includes verbatims but does not include sentiment labels or sentiment scores, so this tab shows searchable feedback-ready rows rather than a sentiment chart.</p>
+              <div className="chart-title-row">
+                <div>
+                  <h2>Open-ended feedback</h2>
+                  <p className="card-subtitle">Directional sentiment is scored in the browser using a simple keyword heuristic. Use it as a rough filter, not a final coded sentiment model.</p>
+                </div>
+                <select className="inline-select" value={sentimentFilter} onChange={(event) => setSentimentFilter(event.target.value)}>
+                  <option>All</option>
+                  <option>Positive</option>
+                  <option>Neutral</option>
+                  <option>Negative</option>
+                </select>
+              </div>
+              <div className="mix-grid sentiment-grid">
+                {derived.sentimentCounts.map((item) => (
+                  <div key={item.name}><strong>{item.count}</strong><span>{item.name}</span></div>
+                ))}
+              </div>
               <div className="feedback-table">
                 <table>
                   <thead>
                     <tr>
                       <th>Group</th>
+                      <th>Sentiment</th>
+                      <th>Score</th>
                       <th>Question</th>
                       <th>Comment</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {derived.feedbackRows.slice(0, 100).map((row, index) => (
+                    {derived.feedbackRows.slice(0, 250).map((row, index) => (
                       <tr key={`${row._respId}-${index}`}>
                         <td>{row._group}</td>
+                        <td><span className={`sentiment-pill ${row._sentiment.label.toLowerCase()}`}>{row._sentiment.label}</span></td>
+                        <td>{row._sentiment.score}</td>
                         <td>{row._intent}</td>
                         <td>{row[COLS.value]}</td>
                       </tr>

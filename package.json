@@ -9,12 +9,13 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
     "@vitejs/plugin-react": "5.1.1",
-    "vite": "7.2.6",
+    "lucide-react": "0.555.0",
+    "papaparse": "5.5.3",
     "react": "19.2.1",
     "react-dom": "19.2.1",
     "recharts": "3.5.0",
-    "lucide-react": "0.555.0",
-    "papaparse": "5.5.3"
+    "vite": "7.2.6"
   }
 }
