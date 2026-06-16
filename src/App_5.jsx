@@ -747,14 +747,8 @@ function DashboardApp({ session }) {
           <button className="download-button" onClick={downloadFilteredCsv}>
             <Download size={16} /> Export filtered
           </button>
-          <button
-            className="signout-button"
-            onClick={async () => {
-              await supabase.auth.signOut();
-              window.location.href = '/';
-            }}
-          >
-            Logout
+          <button className="signout-button" onClick={() => supabase.auth.signOut()}>
+            Sign out
           </button>
         </div>
       </header>
@@ -1114,28 +1108,9 @@ function App() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
-  const [authError, setAuthError] = useState('');
 
   useEffect(() => {
     let isMounted = true;
-
-    const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
-    const queryParams = new URLSearchParams(window.location.search);
-    const errorDescription = hashParams.get('error_description') || queryParams.get('error_description');
-    const errorCode = hashParams.get('error_code') || queryParams.get('error_code');
-    const recoveryType = hashParams.get('type') || queryParams.get('type');
-
-    if (errorDescription) {
-      const readableError = `${errorDescription.replaceAll('+', ' ')}${errorCode ? ` (${errorCode})` : ''}`;
-      setAuthError(readableError);
-      setIsPasswordRecovery(false);
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-
-    if (recoveryType === 'recovery') {
-      setIsPasswordRecovery(true);
-      setAuthError('');
-    }
 
     supabase.auth.getSession().then(({ data, error }) => {
       if (error) console.error('Supabase session error:', error);
@@ -1152,11 +1127,6 @@ function App() {
 
       if (event === 'PASSWORD_RECOVERY') {
         setIsPasswordRecovery(true);
-        setAuthError('');
-      }
-
-      if (event === 'SIGNED_OUT') {
-        setIsPasswordRecovery(false);
       }
 
       setAuthLoading(false);
@@ -1182,7 +1152,7 @@ function App() {
   }
 
   if (!session) {
-    return <Login authError={authError} />;
+    return <Login />;
   }
 
   return <DashboardApp session={session} />;

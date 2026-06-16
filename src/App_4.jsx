@@ -48,7 +48,6 @@ import {
 import { COLS } from './utils/schema.js';
 import { supabase } from './lib/supabaseClient.js';
 import Login from './components/Login.jsx';
-import ResetPassword from './components/ResetPassword.jsx';
 
 const DLS_BLUE = '#002855';
 const DLS_GOLD = '#C5B358';
@@ -747,14 +746,8 @@ function DashboardApp({ session }) {
           <button className="download-button" onClick={downloadFilteredCsv}>
             <Download size={16} /> Export filtered
           </button>
-          <button
-            className="signout-button"
-            onClick={async () => {
-              await supabase.auth.signOut();
-              window.location.href = '/';
-            }}
-          >
-            Logout
+          <button className="signout-button" onClick={() => supabase.auth.signOut()}>
+            Sign out
           </button>
         </div>
       </header>
@@ -1113,29 +1106,9 @@ function DashboardApp({ session }) {
 function App() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
-  const [authError, setAuthError] = useState('');
 
   useEffect(() => {
     let isMounted = true;
-
-    const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
-    const queryParams = new URLSearchParams(window.location.search);
-    const errorDescription = hashParams.get('error_description') || queryParams.get('error_description');
-    const errorCode = hashParams.get('error_code') || queryParams.get('error_code');
-    const recoveryType = hashParams.get('type') || queryParams.get('type');
-
-    if (errorDescription) {
-      const readableError = `${errorDescription.replaceAll('+', ' ')}${errorCode ? ` (${errorCode})` : ''}`;
-      setAuthError(readableError);
-      setIsPasswordRecovery(false);
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-
-    if (recoveryType === 'recovery') {
-      setIsPasswordRecovery(true);
-      setAuthError('');
-    }
 
     supabase.auth.getSession().then(({ data, error }) => {
       if (error) console.error('Supabase session error:', error);
@@ -1146,19 +1119,8 @@ function App() {
 
     const {
       data: { subscription }
-    } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      if (!isMounted) return;
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
-
-      if (event === 'PASSWORD_RECOVERY') {
-        setIsPasswordRecovery(true);
-        setAuthError('');
-      }
-
-      if (event === 'SIGNED_OUT') {
-        setIsPasswordRecovery(false);
-      }
-
       setAuthLoading(false);
     });
 
@@ -1177,12 +1139,8 @@ function App() {
     );
   }
 
-  if (isPasswordRecovery) {
-    return <ResetPassword onComplete={() => setIsPasswordRecovery(false)} />;
-  }
-
   if (!session) {
-    return <Login authError={authError} />;
+    return <Login />;
   }
 
   return <DashboardApp session={session} />;

@@ -46,9 +46,6 @@ import {
   uniqueRespondentsByDemographic
 } from './utils/data.js';
 import { COLS } from './utils/schema.js';
-import { supabase } from './lib/supabaseClient.js';
-import Login from './components/Login.jsx';
-import ResetPassword from './components/ResetPassword.jsx';
 
 const DLS_BLUE = '#002855';
 const DLS_GOLD = '#C5B358';
@@ -383,7 +380,7 @@ function NpsTooltip({ active, payload, label }) {
   );
 }
 
-function DashboardApp({ session }) {
+function App() {
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [activeTab, setActiveTab] = useState('NPS');
@@ -743,20 +740,9 @@ function DashboardApp({ session }) {
             );
           })}
         </nav>
-        <div className="header-actions">
-          <button className="download-button" onClick={downloadFilteredCsv}>
-            <Download size={16} /> Export filtered
-          </button>
-          <button
-            className="signout-button"
-            onClick={async () => {
-              await supabase.auth.signOut();
-              window.location.href = '/';
-            }}
-          >
-            Logout
-          </button>
-        </div>
+        <button className="download-button" onClick={downloadFilteredCsv}>
+          <Download size={16} /> Export filtered
+        </button>
       </header>
 
       <div className="content-shell">
@@ -1108,84 +1094,6 @@ function DashboardApp({ session }) {
       </div>
     </div>
   );
-}
-
-function App() {
-  const [session, setSession] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
-  const [authError, setAuthError] = useState('');
-
-  useEffect(() => {
-    let isMounted = true;
-
-    const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
-    const queryParams = new URLSearchParams(window.location.search);
-    const errorDescription = hashParams.get('error_description') || queryParams.get('error_description');
-    const errorCode = hashParams.get('error_code') || queryParams.get('error_code');
-    const recoveryType = hashParams.get('type') || queryParams.get('type');
-
-    if (errorDescription) {
-      const readableError = `${errorDescription.replaceAll('+', ' ')}${errorCode ? ` (${errorCode})` : ''}`;
-      setAuthError(readableError);
-      setIsPasswordRecovery(false);
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-
-    if (recoveryType === 'recovery') {
-      setIsPasswordRecovery(true);
-      setAuthError('');
-    }
-
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (error) console.error('Supabase session error:', error);
-      if (!isMounted) return;
-      setSession(data?.session ?? null);
-      setAuthLoading(false);
-    });
-
-    const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      if (!isMounted) return;
-      setSession(nextSession);
-
-      if (event === 'PASSWORD_RECOVERY') {
-        setIsPasswordRecovery(true);
-        setAuthError('');
-      }
-
-      if (event === 'SIGNED_OUT') {
-        setIsPasswordRecovery(false);
-      }
-
-      setAuthLoading(false);
-    });
-
-    return () => {
-      isMounted = false;
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  if (authLoading) {
-    return (
-      <div className="auth-loading">
-        <div className="brand-mark">DLS</div>
-        <p>Loading secure dashboard...</p>
-      </div>
-    );
-  }
-
-  if (isPasswordRecovery) {
-    return <ResetPassword onComplete={() => setIsPasswordRecovery(false)} />;
-  }
-
-  if (!session) {
-    return <Login authError={authError} />;
-  }
-
-  return <DashboardApp session={session} />;
 }
 
 export default App;
