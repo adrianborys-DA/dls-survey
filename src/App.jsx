@@ -201,10 +201,7 @@ function rowPeriodMatches(row, selectedPeriods) {
 function rowGroupMatches(row, selectedGroups) {
   if (isAllSelection(selectedGroups)) return true;
   const groups = normalizeSelection(selectedGroups);
-  return groups.some((group) => {
-    if (group === 'Staff') return row._group === 'Staff' || row._group === 'Teaching Faculty';
-    return row._group === group;
-  });
+  return groups.some((group) => row._group === group);
 }
 
 function getSelectedGroups(selectedGroups, allGroups) {
@@ -461,11 +458,7 @@ function DashboardApp({ session }) {
 
     const npsRowsFor = (period, group, intent, respIds = null) => data.nps.filter((row) => {
       if (row._period !== period) return false;
-      if (group !== 'Overall') {
-        if (group === 'Staff') {
-          if (row._group !== 'Staff' && row._group !== 'Teaching Faculty') return false;
-        } else if (row._group !== group) return false;
-      }
+      if (group !== 'Overall' && row._group !== group) return false;
       if (intent && intent !== 'All NPS questions' && row._intent !== intent) return false;
       if (respIds && !respIds.has(row._respId)) return false;
       return true;
@@ -537,7 +530,7 @@ function DashboardApp({ session }) {
     const buildNpsCell = (group, intent) => {
       const sourceRows = group === 'Overall'
         ? currentNps
-        : currentNps.filter((row) => group === 'Staff' ? row._group === 'Staff' || row._group === 'Teaching Faculty' : row._group === group);
+        : currentNps.filter((row) => row._group === group);
       const currentStats = calculateNPSStats(sourceRows.filter((row) => row._intent === intent));
       const previousStats = previousPeriod ? npsStatsFor(previousPeriod, group, intent, respFilterFor(previousPeriod, group)) : null;
       return { current: currentStats.nps, previous: previousStats?.nps ?? null, currentStats, previousStats };
@@ -573,7 +566,8 @@ function DashboardApp({ session }) {
         period,
         Students: uniqueCount(rows.filter((d) => d._group === 'Student')),
         Parents: uniqueCount(rows.filter((d) => d._group === 'Parent')),
-        Staff: uniqueCount(rows.filter((d) => d._group === 'Staff' || d._group === 'Teaching Faculty')),
+        Staff: uniqueCount(rows.filter((d) => d._group === 'Staff')),
+        'Teaching Faculty': uniqueCount(rows.filter((d) => d._group === 'Teaching Faculty')),
         Alumni: uniqueCount(rows.filter((d) => d._group === 'Alumni'))
       };
     });
@@ -922,7 +916,8 @@ function DashboardApp({ session }) {
                       <Bar dataKey="Students" stackId="period" fill={RESPONDER_COLORS[0]} />
                       <Bar dataKey="Parents" stackId="period" fill={RESPONDER_COLORS[1]} />
                       <Bar dataKey="Staff" stackId="period" fill={RESPONDER_COLORS[2]} />
-                      <Bar dataKey="Alumni" stackId="period" fill={RESPONDER_COLORS[3]} />
+                      <Bar dataKey="Teaching Faculty" stackId="period" fill={RESPONDER_COLORS[3]} />
+                      <Bar dataKey="Alumni" stackId="period" fill={RESPONDER_COLORS[4]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
